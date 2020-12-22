@@ -64,9 +64,18 @@ fn gather_files() -> Result<(), Error> {
         .lines()
         .filter_map(|line| line.ok())
         .for_each(|file_name| {
-            let oldest_in_file = blame_file(file_name, &line_regex).unwrap();
-            if oldest_in_file.datetime < oldest_line_so_far.datetime {
-                oldest_line_so_far = oldest_in_file;
+            match blame_file(file_name.clone(), &line_regex) {
+                Ok(details) => {
+                    if details.datetime < oldest_line_so_far.datetime {
+                        oldest_line_so_far = details;
+                    }
+                },
+                Err(error) => {
+                    println!(
+                        "Encountered error getting details for line: {}, with error: {}",
+                        file_name, error
+                    )
+                }
             }
         });
 
