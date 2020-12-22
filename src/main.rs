@@ -59,15 +59,18 @@ fn gather_files() -> Result<(), Error> {
 
     // For each one run a git blame on it.
     let reader = BufReader::new(gitls_stdout);
-    let oldest = reader
+    let mut oldest_line_so_far = LineDetails::default();
+    reader
         .lines()
         .filter_map(|line| line.ok())
-        .map(|file_name| {
-            blame_file(file_name, &line_regex).unwrap()
-        })
-        .min_by(|a, b| a.datetime.cmp(&b.datetime)).unwrap();
+        .for_each(|file_name| {
+            let oldest_in_file = blame_file(file_name, &line_regex).unwrap();
+            if oldest_in_file.datetime < oldest_line_so_far.datetime {
+                oldest_line_so_far = oldest_in_file;
+            }
+        });
 
-    println!("{}", oldest);
+    println!("{}", oldest_line_so_far);
     Ok(())
 }
 
