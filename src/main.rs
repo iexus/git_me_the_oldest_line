@@ -64,6 +64,7 @@ fn gather_files() -> Result<(), Error> {
         .lines()
         .filter_map(|line| line.ok())
         .for_each(|file_name| {
+            println!("blaming file: {}", file_name);
             match blame_file(file_name.clone(), &line_regex) {
                 Ok(details) => {
                     if details.datetime < oldest_line_so_far.datetime {
