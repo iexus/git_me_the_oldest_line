@@ -89,17 +89,13 @@ fn blame_file(file_name: String, line_regex: &regex::Regex) -> Result<LineDetail
     // -f to always show the file name of where the code came from (movement tracking)
     // -M and -C are related to tracking down code movements to the original commit
     // rather than just the latest that touched them
-    let git_blame_stdout = Command::new("git")
+    let git_blame_output = Command::new("git")
         .args(&["blame", "-l", "-f", "-M", "-C", &file_name])
-        .stdout(Stdio::piped())
-        .spawn()?
-        .stdout
-        .ok_or_else(|| Error::new(ErrorKind::Other,"Could not capture standard output."))?;
+        .output()?;
 
 
     let mut oldest_line_so_far = LineDetails::default();
-    let reader = BufReader::new(git_blame_stdout);
-    reader
+    git_blame_output.stdout
         .lines()
         .filter_map(|line| line.ok())
         .for_each(|line| {
