@@ -1,4 +1,5 @@
 use chrono::prelude::*;
+use std::fmt;
 use regex::Regex;
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader, Error, ErrorKind};
@@ -6,10 +7,33 @@ use std::io::{BufRead, BufReader, Error, ErrorKind};
 #[derive(Debug, Clone)]
 struct LineDetails {
     file_name: String,
+    original_filename: String,
     commit_hash: String,
     author: String,
     datetime: DateTime<Utc>,
     code: String,
+}
+
+impl Default for LineDetails {
+    fn default() -> Self {
+        LineDetails{
+            file_name: String::default(),
+            original_filename: String::default(),
+            author: String::default(),
+            commit_hash: String::default(),
+            datetime: Utc::now(),
+            code: String::default(),
+        }
+    }
+}
+
+impl fmt::Display for LineDetails {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f, "File: {} ({})\nHash: {}\nAuthor: {}\nDate: {}\nCode:\n{}\n",
+            self.file_name, self.original_filename, self.commit_hash, self.author, self.datetime, self.code
+        )
+    }
 }
 
 fn main() {
@@ -28,6 +52,10 @@ fn gather_files() -> Result<(), Error> {
         .stdout
         .ok_or_else(|| Error::new(ErrorKind::Other,"Could not capture standard output."))?;
 
+    // AVERT YOUR EYES CHILDREN
+    let line_regex = Regex::new(
+        r"(?P<commit_hash>(^.{40})) (?P<original_filename>(.+)) \((?P<author>(.+))(?P<datetime>(\d{4}-\d{2}-\d{2}[T\s]?\d{2}:\d{2}:\d{2}\s?[+-]\d{2}:?\d{2})).+\d{1}\)(?P<code>(.+$))"
+    ).unwrap();
 
     // For each one run a git blame on it.
     let reader = BufReader::new(gitls_stdout);
@@ -35,47 +63,34 @@ fn gather_files() -> Result<(), Error> {
         .lines()
         .filter_map(|line| line.ok())
         .map(|file_name| {
-            blame_file(file_name).unwrap()
+            blame_file(file_name, &line_regex).unwrap()
         })
         .min_by(|a, b| a.datetime.cmp(&b.datetime)).unwrap();
 
-    println!("File: {}, Author: {}, Date: {}, Code:\n{}\n",
-        oldest.file_name, oldest.author, oldest.datetime, oldest.code
-    );
-
+    println!("{}", oldest);
     Ok(())
 }
 
-fn blame_file(file_name: String) -> Result<LineDetails, Error> {
+fn blame_file(file_name: String, line_regex: &regex::Regex) -> Result<LineDetails, Error> {
     // -l is for the long commit reference
+    // -f to always show the file name of where the code came from (movement tracking)
     // -M and -C are related to tracking down code movements to the original commit
     // rather than just the latest that touched them
     let git_blame_stdout = Command::new("git")
-        .args(&["blame", "-l", "-M", "-C", &file_name])
+        .args(&["blame", "-l", "-f", "-M", "-C", &file_name])
         .stdout(Stdio::piped())
         .spawn()?
         .stdout
         .ok_or_else(|| Error::new(ErrorKind::Other,"Could not capture standard output."))?;
 
-    let mut oldest_line_so_far = LineDetails{
-        file_name: String::from("empty"),
-        author: String::from("empty"),
-        commit_hash: String::from("empty"),
-        datetime: Utc::now(),
-        code: String::from("empty"),
-    };
 
-    // AVERT YOUR EYES CHILDREN
-    let line_pattern = Regex::new(
-        r"(?P<commit_hash>(^.{40})) \((?P<author>(.+))(?P<datetime>(\d{4}-\d{2}-\d{2}[T\s]?\d{2}:\d{2}:\d{2}\s?[+-]\d{2}:?\d{2})).+\d{1}\)(?P<code>(.+$))"
-    ).unwrap();
-
+    let mut oldest_line_so_far = LineDetails::default();
     let reader = BufReader::new(git_blame_stdout);
     reader
         .lines()
         .filter_map(|line| line.ok())
         .for_each(|line| {
-            match parse_line(&line_pattern, &line, &file_name) {
+            match parse_line(&line_regex, &line, &file_name) {
                 Some(details) => {
                     if details.datetime < oldest_line_so_far.datetime {
                         oldest_line_so_far = details.clone();
@@ -94,6 +109,7 @@ fn parse_line(pattern: &regex::Regex, line: &str, file_name: &str) -> Option<Lin
         None => None,
         Some(capture) => {
             let commit_hash = capture.name("commit_hash")?.as_str();
+            let original_filename = capture.name("original_filename")?.as_str();
             let author = capture.name("author")?.as_str().trim();
             let code = capture.name("code")?.as_str();
 
@@ -103,6 +119,7 @@ fn parse_line(pattern: &regex::Regex, line: &str, file_name: &str) -> Option<Lin
 
             Some(LineDetails{
                 file_name: file_name.to_string(),
+                original_filename: original_filename.to_string(),
                 commit_hash: commit_hash.to_string(),
                 author: author.to_string(),
                 datetime: datetime,
