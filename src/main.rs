@@ -1,3 +1,6 @@
+extern crate clap;
+use clap::{Arg, App};
+
 use chrono::prelude::*;
 use regex::Regex;
 use std::process::{Command, Stdio};
@@ -12,15 +15,50 @@ use crate::line_details::LineDetails;
 const QUIT_MESSAGE: &'static str = "QUIT_TASK";
 
 fn main() {
-    match gather_files() {
+
+    let matches = App::new("Git me the oldest line")
+        .version("0.1.0")
+        .author("iexus <2.-@twopointline.com>")
+        .about("Finds you the oldest line in a git repo")
+        .arg(Arg::with_name("threads")
+            .short("t")
+            .long("threads")
+            .value_name("number_of_workers")
+            .help("Sets the number of threads to use.")
+            .takes_value(true)
+        )
+        .arg(Arg::with_name("ignore")
+            .short("i")
+            .long("ignore")
+            .help("Set any files you wish to ignore.")
+            .min_values(1)
+            .takes_value(true)
+        )
+        .get_matches();
+
+    // let ignore_list = Vec::<String>::new();
+    let workers = match matches.value_of("threads") {
+        None => 2,
+        Some(value) => {
+            value.parse::<usize>().unwrap()
+        }
+    };
+
+    println!("Running with {} workers", workers);
+    let ignore_list: Vec<String> = match matches.values_of("ignore") {
+        None => Vec::<String>::new(),
+        Some(values) => {
+            values.map(|x| x.to_string()).collect()
+        }
+    };
+
+    match gather_files(workers, ignore_list) {
         Ok(()) => println!("Success"),
         Err(error) => panic!("Problem occurred: {}", error),
     };
 }
 
-fn gather_files() -> Result<(), Error> {
-    let num_workers = 2;
-
+fn gather_files(num_workers: usize, ignore_list: Vec<String>) -> Result<(), Error> {
     // We want a number of workers to handle the filenames
     let mut workers = Vec::new();
 
@@ -61,6 +99,9 @@ fn gather_files() -> Result<(), Error> {
     reader
         .lines()
         .filter_map(|line| line.ok())
+        .filter(|line| {
+            !ignore_list.contains(line)
+        })
         .for_each(|file_name| {
             // get the current worker
             let message_sender = send_lines_here.get(round_robin).unwrap();
