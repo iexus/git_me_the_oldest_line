@@ -9,6 +9,8 @@ use std::thread;
 mod line_details;
 use crate::line_details::LineDetails;
 
+const QUIT_MESSAGE: &'static str = "QUIT_TASK";
+
 fn main() {
     match gather_files() {
         Ok(()) => println!("Success"),
@@ -69,7 +71,7 @@ fn gather_files() -> Result<(), Error> {
 
     // We send an end message down the queues so that the thread knows to quit
     for sender in send_lines_here {
-        sender.send(String::from("QUIT_TASK")).unwrap();
+        sender.send(QUIT_MESSAGE.to_string()).unwrap();
     }
 
     // Join on all the threads
@@ -101,7 +103,7 @@ fn handle_work(thread_id: usize, receiver: Receiver<String>, transmitter: Sender
     ).unwrap();
 
     for message in receiver {
-        if message == String::from("QUIT_TASK") {
+        if message == QUIT_MESSAGE.to_string() {
             println!("Thread {} quitting.", thread_id);
             break;
         }
