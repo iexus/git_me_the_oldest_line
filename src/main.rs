@@ -1,40 +1,13 @@
 use chrono::prelude::*;
-use std::fmt;
 use regex::Regex;
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader, Error, ErrorKind};
 
-#[derive(Debug, Clone)]
-struct LineDetails {
-    file_name: String,
-    original_filename: String,
-    commit_hash: String,
-    author: String,
-    datetime: DateTime<Utc>,
-    code: String,
-}
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
 
-impl Default for LineDetails {
-    fn default() -> Self {
-        LineDetails{
-            file_name: String::default(),
-            original_filename: String::default(),
-            author: String::default(),
-            commit_hash: String::default(),
-            datetime: Utc::now(),
-            code: String::default(),
-        }
-    }
-}
-
-impl fmt::Display for LineDetails {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f, "File: {} ({})\nHash: {}\nAuthor: {}\nDate: {}\nCode:\n{}\n",
-            self.file_name, self.original_filename, self.commit_hash, self.author, self.datetime, self.code
-        )
-    }
-}
+mod line_details;
+use crate::line_details::LineDetails;
 
 fn main() {
     match gather_files() {
@@ -44,6 +17,34 @@ fn main() {
 }
 
 fn gather_files() -> Result<(), Error> {
+    let num_workers = 2;
+
+    // We want a number of workers to handle the filenames
+    let mut workers = Vec::new();
+
+    // Create a channel to get messages back
+    let (result_sender, result_receiver) = channel::<LineDetails>();
+
+    // Create a number of channels to send tasks to workers
+    let mut send_lines_here = Vec::new();
+
+    for i in 0..num_workers {
+        println!("Creating Thread: {}", i);
+
+        // create the channels for sending shit
+        let (sender, receiver) = channel::<String>();
+        send_lines_here.push(sender);
+
+        // Spawn threads and shove in the workers for us to join to later
+        let result_sender_clone = result_sender.clone();
+        let worker = thread::spawn(move || {
+            handle_work(i, receiver, result_sender_clone);
+        });
+
+        // Save the worker
+        workers.push(worker);
+    }
+
     // Get a list of every file that git tracks
     let gitls_stdout = Command::new("git")
         .args(&["ls-tree", "-r", "--name-only", "HEAD"])
@@ -52,36 +53,79 @@ fn gather_files() -> Result<(), Error> {
         .stdout
         .ok_or_else(|| Error::new(ErrorKind::Other,"Could not capture standard output."))?;
 
+    // For each one run a git blame on it.
+    let reader = BufReader::new(gitls_stdout);
+    let mut round_robin = 0;
+    reader
+        .lines()
+        .filter_map(|line| line.ok())
+        .for_each(|file_name| {
+            // get the current worker
+            let message_sender = send_lines_here.get(round_robin).unwrap();
+            message_sender.send(file_name).unwrap();
+
+            round_robin = (round_robin + 1) % num_workers;
+        });
+
+    // We send an end message down the queues so that the thread knows to quit
+    for sender in send_lines_here {
+        sender.send(String::from("QUIT_TASK")).unwrap();
+    }
+
+    // Join on all the threads
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    println!("Joined to all threads, all input parsed");
+    // Close the original result sender
+    drop(result_sender);
+
+    // Now we can finally parse all the details
+    let mut oldest_line_so_far = LineDetails::default();
+    for message in result_receiver {
+        println!("Receiving message in main thread");
+        if message.datetime < oldest_line_so_far.datetime {
+            oldest_line_so_far = message;
+        }
+    };
+
+    println!("{}", oldest_line_so_far);
+    Ok(())
+}
+
+fn handle_work(thread_id: usize, receiver: Receiver<String>, transmitter: Sender<LineDetails>) {
     // AVERT YOUR EYES CHILDREN
     let line_regex = Regex::new(
         r"(?P<commit_hash>(^.{40})) (?P<original_filename>(.+)) \((?P<author>(.+))(?P<datetime>(\d{4}-\d{2}-\d{2}[T\s]?\d{2}:\d{2}:\d{2}\s?[+-]\d{2}:?\d{2})).+\d{1}\)(?P<code>(.+$))"
     ).unwrap();
 
-    // For each one run a git blame on it.
-    let reader = BufReader::new(gitls_stdout);
-    let mut oldest_line_so_far = LineDetails::default();
-    reader
-        .lines()
-        .filter_map(|line| line.ok())
-        .for_each(|file_name| {
-            println!("blaming file: {}", file_name);
-            match blame_file(file_name.clone(), &line_regex) {
-                Ok(details) => {
-                    if details.datetime < oldest_line_so_far.datetime {
-                        oldest_line_so_far = details;
+    for message in receiver {
+        if message == String::from("QUIT_TASK") {
+            println!("Thread {} quitting.", thread_id);
+            break;
+        }
+
+        println!("Thread {}, blaming file: {}", thread_id, message);
+        match message {
+            message => {
+                match blame_file(message.clone(), &line_regex) {
+                    Ok(details) => {
+                        println!("Thread {} sending message.", thread_id);
+                        transmitter.send(details).unwrap();
+                    },
+                    Err(error) => {
+                        println!(
+                            "Encountered error getting details for line: {}, with error: {}",
+                            message, error
+                        )
                     }
-                },
-                Err(error) => {
-                    println!(
-                        "Encountered error getting details for line: {}, with error: {}",
-                        file_name, error
-                    )
                 }
             }
-        });
+        };
+    }
 
-    println!("{}", oldest_line_so_far);
-    Ok(())
+    drop(transmitter);
 }
 
 fn blame_file(file_name: String, line_regex: &regex::Regex) -> Result<LineDetails, Error> {
@@ -92,7 +136,6 @@ fn blame_file(file_name: String, line_regex: &regex::Regex) -> Result<LineDetail
     let git_blame_output = Command::new("git")
         .args(&["blame", "-l", "-f", "-M", "-C", &file_name])
         .output()?;
-
 
     let mut oldest_line_so_far = LineDetails::default();
     git_blame_output.stdout
@@ -113,7 +156,6 @@ fn blame_file(file_name: String, line_regex: &regex::Regex) -> Result<LineDetail
 }
 
 fn parse_line(pattern: &regex::Regex, line: &str, file_name: &str) -> Option<LineDetails> {
-
     match pattern.captures(line) {
         None => None,
         Some(capture) => {
