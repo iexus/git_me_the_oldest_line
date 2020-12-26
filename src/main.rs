@@ -20,6 +20,13 @@ fn main() {
             .help("Sets the number of threads to use.")
             .takes_value(true)
         )
+        .arg(Arg::with_name("directory")
+            .short("d")
+            .long("directory")
+            .value_name("directory")
+            .help("Set the directory to blame within")
+            .takes_value(true)
+        )
         .arg(Arg::with_name("ignore")
             .short("i")
             .long("ignore")
@@ -35,8 +42,14 @@ fn main() {
             value.parse::<usize>().unwrap()
         }
     };
-
     println!("Running with {} workers", workers);
+
+    let directory = match matches.value_of("directory") {
+        None => "./",
+        Some(value) => value,
+    };
+    println!("Looking in directory: {}", directory);
+
     let ignore_list: Vec<String> = match matches.values_of("ignore") {
         None => Vec::<String>::new(),
         Some(values) => {
@@ -44,7 +57,7 @@ fn main() {
         }
     };
 
-    match process_files(workers, ignore_list) {
+    match process_files(workers, directory, ignore_list) {
         Ok(()) => println!("Success"),
         Err(error) => panic!("Problem occurred: {}", error),
     };
